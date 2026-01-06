@@ -25,13 +25,11 @@ services:
     image: minio/minio:latest
     container_name: ${MINIO_NAME}
     restart: unless-stopped
+    network_mode: host
     command: server --console-address ":9001" http://${VM2_IP}:9000/data http://${VM3_IP}:9000/data http://${VM4_IP}:9000/data
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    ports:
-      - "9000:9000"
-      - "9001:9001"
     volumes:
       - minio-data:/data
 
