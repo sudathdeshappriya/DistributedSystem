@@ -5,10 +5,39 @@ const path = require('path');
 let minioClient = null;
 const BUCKET_NAME = process.env.MINIO_BUCKET_NAME || 'distributed-files';
 
+const parseMinioNodes = () => {
+  // Multi-VM support: MINIO_NODES is a comma-separated list of host:port
+  // Example: MINIO_NODES=10.0.0.5:9000,10.0.0.6:9000,10.0.0.7:9000
+  const raw = (process.env.MINIO_NODES || '').trim();
+  if (raw) {
+    return raw
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+      .map(entry => {
+        const [host, portStr] = entry.split(':');
+        const port = Number.parseInt(portStr, 10);
+        if (!host || Number.isNaN(port)) {
+          throw new Error(`Invalid MINIO_NODES entry: '${entry}'. Expected host:port`);
+        }
+        return { endpoint: host, port };
+      });
+  }
+
+  // Local docker-compose defaults (single machine, multiple mapped ports)
+  const endpoint = process.env.MINIO_ENDPOINT || 'localhost';
+  return [
+    { endpoint, port: 9001 },
+    { endpoint, port: 9003 },
+    { endpoint, port: 9005 }
+  ];
+};
+
 // Initialize MinIO client
 const initializeMinIO = async () => {
-  const endpoint = process.env.MINIO_ENDPOINT || 'localhost';
-  const port = parseInt(process.env.MINIO_PORT || '9001');
+  const nodes = parseMinioNodes();
+  const endpoint = process.env.MINIO_ENDPOINT || nodes[0].endpoint;
+  const port = parseInt(process.env.MINIO_PORT || String(nodes[0].port));
   const accessKey = process.env.MINIO_ACCESS_KEY || 'minioadmin';
   const secretKey = process.env.MINIO_SECRET_KEY || 'minioadmin123';
   const useSSL = process.env.MINIO_USE_SSL === 'true';
@@ -100,23 +129,24 @@ const getFileInfo = async (objectName) => {
  * @returns {Array<Minio.Client>} - Array of MinIO clients, one per node
  */
 const getMinioClients = () => {
-  const endpoint = process.env.MINIO_ENDPOINT || 'localhost';
+  const nodes = parseMinioNodes();
   const accessKey = process.env.MINIO_ACCESS_KEY || 'minioadmin';
   const secretKey = process.env.MINIO_SECRET_KEY || 'minioadmin123';
   const useSSL = process.env.MINIO_USE_SSL === 'true';
-  
-  // SCALABILITY: Create clients for all nodes
-  // To add more nodes, simply add more ports here (no other code changes needed)
-  const ports = [9001, 9003, 9005]; // MinIO node ports
-  const clients = ports.map(port => new Minio.Client({
-    endPoint: endpoint,
-    port: port,
-    useSSL: useSSL,
-    accessKey: accessKey,
-    secretKey: secretKey
+
+  const clients = nodes.map(node => new Minio.Client({
+    endPoint: node.endpoint,
+    port: node.port,
+    useSSL,
+    accessKey,
+    secretKey
   }));
   
   return clients;
+};
+
+const getMinioNodeConfigs = () => {
+  return parseMinioNodes();
 };
 
 /**
@@ -137,6 +167,7 @@ const getMinioClients = () => {
  */
 const getFileStreamFromReplica = async (objectName) => {
   const clients = getMinioClients();
+  const nodes = getMinioNodeConfigs();
   
   // HIGH AVAILABILITY: Try each replica node until one succeeds
   // This implements automatic failover - if one node is down, try the next
@@ -146,7 +177,7 @@ const getFileStreamFromReplica = async (objectName) => {
       const stream = await clients[i].getObject(BUCKET_NAME, objectName);
       // RELIABILITY: Return immediately on first success (no silent failures)
       // Include node info for monitoring/debugging
-      return { stream, nodeIndex: i, nodePort: [9001, 9003, 9005][i] };
+      return { stream, nodeIndex: i, nodePort: nodes[i]?.port, nodeEndpoint: nodes[i]?.endpoint };
     } catch (error) {
       lastError = error;
       // HIGH AVAILABILITY: Continue to next replica instead of failing immediately
@@ -175,6 +206,7 @@ const getFileStreamFromReplica = async (objectName) => {
  */
 const deleteFileFromAllReplicas = async (objectName) => {
   const clients = getMinioClients();
+  const nodes = getMinioNodeConfigs();
   const results = [];
   
   // RELIABILITY: Try to delete from all replicas and collect results
@@ -182,13 +214,14 @@ const deleteFileFromAllReplicas = async (objectName) => {
   for (let i = 0; i < clients.length; i++) {
     try {
       await clients[i].removeObject(BUCKET_NAME, objectName);
-      results.push({ nodeIndex: i, nodePort: [9001, 9003, 9005][i], success: true });
+      results.push({ nodeIndex: i, nodeEndpoint: nodes[i]?.endpoint, nodePort: nodes[i]?.port, success: true });
     } catch (error) {
       // RELIABILITY: Record failure instead of throwing (partial success is better than total failure)
       // Client will be notified which replicas failed
       results.push({ 
         nodeIndex: i, 
-        nodePort: [9001, 9003, 9005][i], 
+        nodeEndpoint: nodes[i]?.endpoint,
+        nodePort: nodes[i]?.port, 
         success: false, 
         error: error.message 
       });
@@ -213,7 +246,7 @@ const deleteFileFromAllReplicas = async (objectName) => {
  */
 const getStorageLocations = async (objectName) => {
   const clients = getMinioClients();
-  const ports = [9001, 9003, 9005];
+  const nodes = getMinioNodeConfigs();
   const locations = [];
   
   // SCALABILITY: Check all nodes to determine file distribution
@@ -223,8 +256,8 @@ const getStorageLocations = async (objectName) => {
       await clients[i].statObject(BUCKET_NAME, objectName);
       locations.push({
         nodeIndex: i,
-        endpoint: process.env.MINIO_ENDPOINT || 'localhost',
-        port: ports[i]
+        endpoint: nodes[i]?.endpoint,
+        port: nodes[i]?.port
       });
     } catch (error) {
       // File doesn't exist on this node (replication may be in progress)
@@ -239,6 +272,7 @@ module.exports = {
   initializeMinIO,
   getMinioClient,
   getMinioClients,
+  getMinioNodeConfigs,
   uploadFile,
   uploadFileFromBuffer,
   downloadFile,

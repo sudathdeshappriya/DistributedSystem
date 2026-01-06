@@ -1,4 +1,4 @@
-const { getMinioClients, BUCKET_NAME } = require('./minioService');
+const { getMinioClients, getMinioNodeConfigs, BUCKET_NAME } = require('./minioService');
 const { listAllFiles } = require('./etcdService');
 
 /**
@@ -102,7 +102,7 @@ class HealingService {
    */
   async healFileIfNeeded(fileId, metadata) {
     const clients = getMinioClients();
-    const expectedNodes = [9001, 9003, 9005];
+    const nodes = getMinioNodeConfigs();
     const missingNodes = [];
 
     // Check which nodes are missing the file
@@ -115,7 +115,7 @@ class HealingService {
           missingNodes.push(i); // Node index missing the file
         } else {
           // Node might be down, skip for now
-          console.log(`Node ${expectedNodes[i]} appears down, skipping healing to it`);
+          console.log(`Node ${nodes[i]?.endpoint}:${nodes[i]?.port} appears down, skipping healing to it`);
         }
       }
     }
@@ -150,9 +150,9 @@ class HealingService {
     for (const nodeIndex of missingNodes) {
       try {
         await this.copyFileToNode(sourceClient, clients[nodeIndex], metadata.objectName, metadata.mimetype);
-        console.log(`Healed file ${fileId} to node ${expectedNodes[nodeIndex]}`);
+        console.log(`Healed file ${fileId} to node ${nodes[nodeIndex]?.endpoint}:${nodes[nodeIndex]?.port}`);
       } catch (error) {
-        console.error(`Failed to heal file ${fileId} to node ${expectedNodes[nodeIndex]}:`, error.message);
+        console.error(`Failed to heal file ${fileId} to node ${nodes[nodeIndex]?.endpoint}:${nodes[nodeIndex]?.port}:`, error.message);
       }
     }
 

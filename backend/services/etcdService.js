@@ -2,14 +2,29 @@ const { Etcd3 } = require('etcd3');
 
 let etcdClient = null;
 
-// Initialize etcd client
-const initializeEtcd = async () => {
-  // Connect to all etcd cluster nodes for high availability
-  const hosts = [
+const getEtcdHosts = () => {
+  // Multi-VM support: allow passing a comma-separated list of URLs.
+  // Example: ETCD_HOSTS=http://10.0.0.5:2379,http://10.0.0.6:2379,http://10.0.0.7:2379
+  const raw = (process.env.ETCD_HOSTS || '').trim();
+  if (raw) {
+    return raw
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+  }
+
+  // Local docker-compose defaults (single machine, multiple mapped ports)
+  return [
     'http://localhost:2379',  // etcd1
     'http://localhost:2381',  // etcd2
     'http://localhost:2383'   // etcd3
   ];
+};
+
+// Initialize etcd client
+const initializeEtcd = async () => {
+  // Connect to all etcd cluster nodes for high availability
+  const hosts = getEtcdHosts();
   
   etcdClient = new Etcd3({
     hosts: hosts,
