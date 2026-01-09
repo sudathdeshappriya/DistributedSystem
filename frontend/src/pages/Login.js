@@ -110,12 +110,6 @@ const Login = () => {
               </Link>
             </span>
           </div>
-
-          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
-            <p className="text-xs text-blue-800">
-              <strong>Demo Account:</strong> Username: <code>admin</code>, Password: <code>admin123</code>
-            </p>
-          </div>
         </form>
       </div>
     </div>
