@@ -355,6 +355,12 @@ const deleteFileFromAllReplicas = async (objectName) => {
  * @param {string} objectName - The object name/key in MinIO
  * @returns {Promise<Array>} - Array of locations where file exists
  */
+/**
+ * HIGH AVAILABILITY: Get storage locations with timeout protection
+ * 
+ * This function checks which MinIO nodes have the file.
+ * Uses timeout protection to avoid hanging on unreachable nodes.
+ */
 const getStorageLocations = async (objectName) => {
   const clients = getMinioClients();
   const nodes = getMinioNodeConfigs();
@@ -364,14 +370,22 @@ const getStorageLocations = async (objectName) => {
   // This allows system to track which nodes have data (important for scaling)
   for (let i = 0; i < clients.length; i++) {
     try {
-      await clients[i].statObject(BUCKET_NAME, objectName);
+      // HIGH AVAILABILITY: Add timeout to prevent hanging on unreachable nodes
+      const statCheck = clients[i].statObject(BUCKET_NAME, objectName);
+      const timeout = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Node check timeout')), 3000)
+      );
+      
+      await Promise.race([statCheck, timeout]);
+      
       locations.push({
         nodeIndex: i,
         endpoint: nodes[i]?.endpoint,
         port: nodes[i]?.port
       });
     } catch (error) {
-      // File doesn't exist on this node (replication may be in progress)
+      // File doesn't exist on this node OR node is unreachable
+      // HIGH AVAILABILITY: Continue checking other nodes
       continue;
     }
   }
