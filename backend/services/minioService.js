@@ -33,31 +33,53 @@ const parseMinioNodes = () => {
   ];
 };
 
-// Initialize MinIO client
+// Initialize MinIO client with automatic failover
 const initializeMinIO = async () => {
   const nodes = parseMinioNodes();
-  const endpoint = process.env.MINIO_ENDPOINT || nodes[0].endpoint;
-  const port = parseInt(process.env.MINIO_PORT || String(nodes[0].port));
   const accessKey = process.env.MINIO_ACCESS_KEY || 'minioadmin';
   const secretKey = process.env.MINIO_SECRET_KEY || 'minioadmin123';
   const useSSL = process.env.MINIO_USE_SSL === 'true';
 
-  minioClient = new Minio.Client({
-    endPoint: endpoint,
-    port: port,
-    useSSL: useSSL,
-    accessKey: accessKey,
-    secretKey: secretKey
-  });
+  // Try connecting to each node until one succeeds (fault tolerance)
+  let lastError = null;
+  for (const node of nodes) {
+    try {
+      console.log(`Attempting to connect to MinIO at ${node.endpoint}:${node.port}...`);
+      
+      const testClient = new Minio.Client({
+        endPoint: node.endpoint,
+        port: node.port,
+        useSSL: useSSL,
+        accessKey: accessKey,
+        secretKey: secretKey
+      });
 
-  // Check if bucket exists, create if it doesn't
-  const bucketExists = await minioClient.bucketExists(BUCKET_NAME);
-  if (!bucketExists) {
-    await minioClient.makeBucket(BUCKET_NAME, 'us-east-1');
-    console.log(`Bucket '${BUCKET_NAME}' created successfully`);
+      // Test connection by checking bucket
+      const bucketExists = await Promise.race([
+        testClient.bucketExists(BUCKET_NAME),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 3000))
+      ]);
+
+      // Connection successful! Use this client
+      minioClient = testClient;
+      
+      if (!bucketExists) {
+        await minioClient.makeBucket(BUCKET_NAME, 'us-east-1');
+        console.log(`Bucket '${BUCKET_NAME}' created successfully`);
+      }
+      
+      console.log(`✓ Connected to MinIO at ${node.endpoint}:${node.port}`);
+      return minioClient;
+      
+    } catch (error) {
+      console.log(`Failed to connect to MinIO at ${node.endpoint}:${node.port}: ${error.message}`);
+      lastError = error;
+      // Continue to next node
+    }
   }
 
-  return minioClient;
+  // All nodes failed
+  throw new Error(`Failed to connect to any MinIO node. Last error: ${lastError?.message}`);
 };
 
 // Get MinIO client instance
