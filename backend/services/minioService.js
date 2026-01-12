@@ -90,27 +90,116 @@ const getMinioClient = () => {
   return minioClient;
 };
 
-// Upload file to MinIO
+/**
+ * HIGH AVAILABILITY: Upload file with automatic failover
+ * 
+ * This function demonstrates High Availability by implementing automatic failover.
+ * If one MinIO node fails, the system automatically tries the next available node.
+ * This ensures uploads continue working even when individual nodes fail.
+ * 
+ * Failover Strategy:
+ * 1. Try primary connected node first (fastest path)
+ * 2. If connection error, try all other nodes
+ * 3. Return on first successful upload
+ * 
+ * @param {string} filePath - Local file path to upload
+ * @param {string} objectName - Object name in MinIO
+ * @param {string} contentType - MIME type
+ * @returns {Promise} - Upload result
+ */
 const uploadFile = async (filePath, objectName, contentType) => {
-  const client = getMinioClient();
-  
   const metaData = {
     'Content-Type': contentType || 'application/octet-stream',
   };
 
-  const result = await client.fPutObject(BUCKET_NAME, objectName, filePath, metaData);
-  return result;
+  // HIGH AVAILABILITY: Try primary client first (fastest path)
+  try {
+    const client = getMinioClient();
+    const result = await client.fPutObject(BUCKET_NAME, objectName, filePath, metaData);
+    return result;
+  } catch (primaryError) {
+    // Check if it's a connection error that warrants failover
+    if (!primaryError.message?.includes('EHOSTUNREACH') && 
+        !primaryError.message?.includes('ECONNREFUSED') &&
+        !primaryError.message?.includes('ETIMEDOUT')) {
+      throw primaryError; // Not a connection error, propagate immediately
+    }
+
+    // HIGH AVAILABILITY: Primary node failed, try all other nodes
+    const clients = getMinioClients();
+    const nodes = getMinioNodeConfigs();
+    let lastError = primaryError;
+
+    for (let i = 0; i < clients.length; i++) {
+      try {
+        const result = await clients[i].fPutObject(BUCKET_NAME, objectName, filePath, metaData);
+        console.log(`Upload succeeded via failover node: ${nodes[i]?.endpoint}:${nodes[i]?.port}`);
+        return result;
+      } catch (error) {
+        lastError = error;
+        continue; // Try next node
+      }
+    }
+
+    // RELIABILITY: All nodes failed, throw explicit error
+    throw new Error(`Upload failed on all MinIO nodes. Last error: ${lastError?.message}`);
+  }
 };
 
-// Upload file from buffer
+/**
+ * HIGH AVAILABILITY: Upload file from buffer with automatic failover
+ * 
+ * This function demonstrates High Availability by implementing automatic failover.
+ * If one MinIO node fails, the system automatically tries the next available node.
+ * This ensures uploads continue working even when individual nodes fail.
+ * 
+ * Failover Strategy:
+ * 1. Try primary connected node first (fastest path)
+ * 2. If connection error, try all other nodes
+ * 3. Return on first successful upload
+ * 
+ * @param {Buffer} buffer - File buffer to upload
+ * @param {string} objectName - Object name in MinIO
+ * @param {string} contentType - MIME type
+ * @returns {Promise}
+ */
 const uploadFileFromBuffer = async (buffer, objectName, contentType) => {
-  const client = getMinioClient();
-  
   const metaData = {
     'Content-Type': contentType || 'application/octet-stream',
   };
 
-  await client.putObject(BUCKET_NAME, objectName, buffer, buffer.length, metaData);
+  // HIGH AVAILABILITY: Try primary client first (fastest path)
+  try {
+    const client = getMinioClient();
+    await client.putObject(BUCKET_NAME, objectName, buffer, buffer.length, metaData);
+    return;
+  } catch (primaryError) {
+    // Check if it's a connection error that warrants failover
+    if (!primaryError.message?.includes('EHOSTUNREACH') && 
+        !primaryError.message?.includes('ECONNREFUSED') &&
+        !primaryError.message?.includes('ETIMEDOUT')) {
+      throw primaryError; // Not a connection error, propagate immediately
+    }
+
+    // HIGH AVAILABILITY: Primary node failed, try all other nodes
+    const clients = getMinioClients();
+    const nodes = getMinioNodeConfigs();
+    let lastError = primaryError;
+
+    for (let i = 0; i < clients.length; i++) {
+      try {
+        await clients[i].putObject(BUCKET_NAME, objectName, buffer, buffer.length, metaData);
+        console.log(`Upload succeeded via failover node: ${nodes[i]?.endpoint}:${nodes[i]?.port}`);
+        return;
+      } catch (error) {
+        lastError = error;
+        continue; // Try next node
+      }
+    }
+
+    // RELIABILITY: All nodes failed, throw explicit error
+    throw new Error(`Upload failed on all MinIO nodes. Last error: ${lastError?.message}`);
+  }
 };
 
 // Download file from MinIO
